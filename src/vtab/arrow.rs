@@ -6,9 +6,7 @@ use std::ptr::null_mut;
 
 use crate::vtab::vector::Inserter;
 use arrow::array::{
-    as_boolean_array, as_large_list_array, as_list_array, as_primitive_array, as_string_array, as_struct_array, Array,
-    ArrayData, AsArray, BooleanArray, Decimal128Array, FixedSizeListArray, GenericListArray, OffsetSizeTrait,
-    PrimitiveArray, StringArray, StructArray,
+    as_boolean_array, as_large_list_array, as_list_array, as_primitive_array, as_string_array, as_struct_array, Array, ArrayAccessor, ArrayData, AsArray, BinaryArray, BooleanArray, Decimal128Array, Decimal256Array, FixedSizeListArray, GenericListArray, OffsetSizeTrait, PrimitiveArray, StringArray, StructArray
 };
 
 use arrow::{
@@ -141,6 +139,7 @@ pub fn to_duckdb_type_id(data_type: &DataType) -> Result<LogicalTypeId, Box<dyn 
         DataType::UInt16 => USmallint,
         DataType::UInt32 => UInteger,
         DataType::UInt64 => UBigint,
+        DataType::Float16 => Float,
         DataType::Float32 => Float,
         DataType::Float64 => Double,
         DataType::Timestamp(unit, None) => match unit {
@@ -226,6 +225,12 @@ pub fn record_batch_to_duckdb_data_chunk(
             }
             DataType::Utf8 => {
                 string_array_to_vector(as_string_array(col.as_ref()), &mut chunk.flat_vector(i));
+            }
+            DataType::Binary => {
+                match col.as_ref().as_binary_opt() {
+                    Some(array) => binary_array_to_vector(array, &mut chunk.flat_vector(i)),
+                    None => return Err(format!("column {} is of binary type, but could not be converted to a GenericBinaryArray", i).into())
+                }
             }
             DataType::List(_) => {
                 list_array_to_vector(as_list_array(col.as_ref()), &mut chunk.list_vector(i))?;
@@ -321,6 +326,12 @@ fn primitive_array_to_vector(array: &dyn Array, out: &mut dyn Vector) -> Result<
                 as_primitive_array(array),
                 out.as_mut_any().downcast_mut().unwrap(),
             );
+        },
+        DataType::Float16 => {
+            primitive_array_to_flat_vector::<Float16Type>(
+                as_primitive_array(array),
+                out.as_mut_any().downcast_mut().unwrap(),
+            );
         }
         DataType::Float32 => {
             primitive_array_to_flat_vector::<Float32Type>(
@@ -334,12 +345,71 @@ fn primitive_array_to_vector(array: &dyn Array, out: &mut dyn Vector) -> Result<
                 out.as_mut_any().downcast_mut().unwrap(),
             );
         }
+        DataType::Interval(unit) => {
+            match unit {
+                IntervalUnit::YearMonth => {
+                    primitive_array_to_flat_vector::<IntervalYearMonthType>(
+                        as_primitive_array(array),
+                        out.as_mut_any().downcast_mut().unwrap(),
+                    );
+                }
+                IntervalUnit::DayTime => {
+                    primitive_array_to_flat_vector::<IntervalDayTimeType>(
+                        as_primitive_array(array),
+                        out.as_mut_any().downcast_mut().unwrap(),
+                    );
+                },
+                IntervalUnit::MonthDayNano => {
+                    primitive_array_to_flat_vector::<IntervalMonthDayNanoType>(
+                        as_primitive_array(array),
+                        out.as_mut_any().downcast_mut().unwrap(),
+                    );
+                }
+            }
+        }
+        DataType::Duration(unit) => {
+            match unit {
+                TimeUnit::Second => {
+                    primitive_array_to_flat_vector::<DurationSecondType>(
+                        as_primitive_array(array),
+                        out.as_mut_any().downcast_mut().unwrap(),
+                    );
+                }
+                TimeUnit::Millisecond => {
+                    primitive_array_to_flat_vector::<DurationMillisecondType>(
+                        as_primitive_array(array),
+                        out.as_mut_any().downcast_mut().unwrap(),
+                    );
+                }
+                TimeUnit::Microsecond => {
+                    primitive_array_to_flat_vector::<DurationMicrosecondType>(
+                        as_primitive_array(array),
+                        out.as_mut_any().downcast_mut().unwrap(),
+                    );
+                }
+                TimeUnit::Nanosecond => {
+                    primitive_array_to_flat_vector::<DurationNanosecondType>(
+                        as_primitive_array(array),
+                        out.as_mut_any().downcast_mut().unwrap(),
+                    );
+                }
+            } 
+        }
         DataType::Decimal128(_, _) => {
             decimal_array_to_vector(
                 array
                     .as_any()
                     .downcast_ref::<Decimal128Array>()
-                    .expect("Unable to downcast to BooleanArray"),
+                    .expect("Unable to downcast to Decimal128Array"),
+                out.as_mut_any().downcast_mut().unwrap(),
+            );
+        }
+        DataType::Decimal256(_, _) => {
+            decimal256_array_to_vector(
+                array
+                    .as_any()
+                    .downcast_ref::<Decimal256Array>()
+                    .expect("Unable to downcast to Decimal256Array"),
                 out.as_mut_any().downcast_mut().unwrap(),
             );
         }
@@ -390,9 +460,18 @@ fn primitive_array_to_vector(array: &dyn Array, out: &mut dyn Vector) -> Result<
 fn decimal_array_to_vector(array: &Decimal128Array, out: &mut FlatVector) {
     assert!(array.len() <= out.capacity());
     for i in 0..array.len() {
-        out.as_mut_slice()[i] = array.value_as_string(i).parse::<f64>().unwrap();
+        out.as_mut_slice()[i] = array.value(i);
+        // out.as_mut_slice()[i] = array.value_as_string(i).parse::<f64>().unwrap();
     }
 }
+
+fn decimal256_array_to_vector(array: &Decimal256Array, out: &mut FlatVector) {
+    assert!(array.len() <= out.capacity());
+    for i in 0..array.len() {
+        out.as_mut_slice()[i] = array.value(i);
+    }
+}
+
 
 /// Convert Arrow [BooleanArray] to a duckdb vector.
 fn boolean_array_to_vector(array: &BooleanArray, out: &mut FlatVector) {
@@ -404,6 +483,17 @@ fn boolean_array_to_vector(array: &BooleanArray, out: &mut FlatVector) {
 }
 
 fn string_array_to_vector(array: &StringArray, out: &mut FlatVector) {
+    assert!(array.len() <= out.capacity());
+
+    // TODO: zero copy assignment
+    for i in 0..array.len() {
+        let s = array.value(i);
+        out.insert(i, s);
+    }
+}
+
+
+fn binary_array_to_vector(array: &BinaryArray, out: &mut FlatVector) {
     assert!(array.len() <= out.capacity());
 
     // TODO: zero copy assignment
@@ -425,6 +515,12 @@ fn list_array_to_vector<O: OffsetSizeTrait + AsPrimitive<usize>>(
         }
         DataType::Utf8 => {
             string_array_to_vector(as_string_array(value_array.as_ref()), &mut child);
+        }
+        DataType::Binary => {
+            match value_array.as_ref().as_binary_opt() {
+                Some(array) => binary_array_to_vector(array, &mut child),
+                None => return Err("List elements are of binary type, but could not be converted to a GenericBinaryArray".into())
+            }
         }
         _ => {
             return Err("Nested list is not supported yet.".into());
@@ -458,6 +554,12 @@ fn fixed_size_list_array_to_vector(
         DataType::Utf8 => {
             string_array_to_vector(as_string_array(value_array.as_ref()), &mut child);
         }
+        DataType::Binary => {
+            match value_array.as_ref().as_binary_opt() {
+                Some(array) => binary_array_to_vector(array, &mut child),
+                None => return Err("Fixed size list elements are of binary type, but could not be converted to a GenericBinaryArray".into())
+            }
+        }
         _ => {
             return Err("Nested list is not supported yet.".into());
         }
@@ -487,6 +589,12 @@ fn struct_array_to_vector(array: &StructArray, out: &mut StructVector) -> Result
             }
             DataType::Utf8 => {
                 string_array_to_vector(as_string_array(column.as_ref()), &mut out.child(i));
+            }
+            DataType::Binary => {
+                match column.as_ref().as_binary_opt() {
+                    Some(array) => binary_array_to_vector(array, &mut out.child(i)),
+                    None => return Err(format!("column {} in struct is of binary type, but could not be converted to a GenericBinaryArray", i).into())
+                }
             }
             DataType::List(_) => {
                 list_array_to_vector(as_list_array(column.as_ref()), &mut out.list_vector_child(i))?;
@@ -555,14 +663,8 @@ mod test {
     use crate::{Connection, Result};
     use arrow::{
         array::{
-            Array, ArrayRef, AsArray, Date32Array, Date64Array, Decimal256Array, Float64Array, GenericListArray,
-            Int32Array, ListArray, OffsetSizeTrait, PrimitiveArray, StringArray, StructArray, Time32SecondArray,
-            Time64MicrosecondArray, TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
-            TimestampSecondArray,
-        },
-        buffer::{OffsetBuffer, ScalarBuffer},
-        datatypes::{i256, ArrowPrimitiveType, DataType, Field, Fields, Schema},
-        record_batch::RecordBatch,
+            array, Array, ArrayRef, AsArray, BinaryArray, Date32Array, Date64Array, Decimal128Array, Decimal256Array, DurationMicrosecondArray, DurationMillisecondArray, DurationNanosecondArray, DurationSecondArray, Float16Array, Float32Array, Float64Array, GenericBinaryArray, GenericListArray, Int32Array, IntervalDayTimeArray, IntervalMonthDayNanoArray, IntervalYearMonthArray, ListArray, OffsetSizeTrait, PrimitiveArray, StringArray, StructArray, Time32SecondArray, Time64MicrosecondArray, TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray
+        }, buffer::{OffsetBuffer, ScalarBuffer}, datatypes::{i256, ArrowPrimitiveType, DataType, Field, Fields, Schema}, record_batch::RecordBatch
     };
     use std::{error::Error, sync::Arc};
 
@@ -643,7 +745,18 @@ mod test {
         Ok(())
     }
 
-    fn check_rust_primitive_array_roundtrip<T1, T2>(
+
+    fn check_rust_primitive_array_roundtrip<T>(
+        array: PrimitiveArray<T>,
+    ) -> Result<(), Box<dyn Error>>
+    where
+        T: ArrowPrimitiveType
+    {
+        let expected_array = array.clone();
+        check_rust_primitive_array_conversion(array, expected_array)
+    }
+
+    fn check_rust_primitive_array_conversion<T1, T2>(
         input_array: PrimitiveArray<T1>,
         expected_array: PrimitiveArray<T2>,
     ) -> Result<(), Box<dyn Error>>
@@ -742,67 +855,78 @@ mod test {
             ])),
             None,
         ))?;
+        Ok(())
+    }
 
+    #[test]
+    fn test_non_primitive_roundtrip() -> Result<(), Box<dyn Error>> {
+        let x = BinaryArray::from_opt_vec(vec![Some(b"foo"), Some(b"baz"), Some(b"bar")]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_primitive_roundtrip() -> Result<(), Box<dyn Error>> {
+        use half::f16;
+
+        check_rust_primitive_array_roundtrip(Float16Array::from_iter_values([f16::from_f64(1.0), f16::from_f64(2.0)].into_iter()))?;
+        check_rust_primitive_array_roundtrip(Decimal128Array::from(vec![Some(1), Some(2), Some(3)]))?;
+        check_rust_primitive_array_roundtrip(Decimal256Array::from(vec![i256::from(1), i256::from(2), i256::from(3)]))?;
+        
         Ok(())
     }
 
     #[test]
     fn test_timestamp_roundtrip() -> Result<(), Box<dyn Error>> {
-        check_rust_primitive_array_roundtrip(Int32Array::from(vec![1, 2, 3]), Int32Array::from(vec![1, 2, 3]))?;
+        check_rust_primitive_array_roundtrip(Int32Array::from(vec![1, 2, 3]))?;
 
-        check_rust_primitive_array_roundtrip(
-            TimestampMicrosecondArray::from(vec![1, 2, 3]),
-            TimestampMicrosecondArray::from(vec![1, 2, 3]),
-        )?;
+        check_rust_primitive_array_roundtrip(TimestampMicrosecondArray::from(vec![1, 2, 3]))?;
+        check_rust_primitive_array_roundtrip(TimestampNanosecondArray::from(vec![1, 2, 3]))?;
+        check_rust_primitive_array_roundtrip(TimestampSecondArray::from(vec![1, 2, 3]))?;
+        check_rust_primitive_array_roundtrip(TimestampMillisecondArray::from(vec![1, 2, 3]))?;
 
-        check_rust_primitive_array_roundtrip(
-            TimestampNanosecondArray::from(vec![1, 2, 3]),
-            TimestampNanosecondArray::from(vec![1, 2, 3]),
-        )?;
+        check_rust_primitive_array_roundtrip(IntervalYearMonthArray::from(vec![Some(1), None, Some(-5)]))?;
+        check_rust_primitive_array_roundtrip(IntervalDayTimeArray::from(vec![Some(1), None, Some(-5)]))?;
+        check_rust_primitive_array_roundtrip(IntervalMonthDayNanoArray::from(vec![Some(100000000000000000000), Some(300000000000000000000), Some(-500000000000000000000)]))?;
 
-        check_rust_primitive_array_roundtrip(
-            TimestampSecondArray::from(vec![1, 2, 3]),
-            TimestampSecondArray::from(vec![1, 2, 3]),
-        )?;
-
-        check_rust_primitive_array_roundtrip(
-            TimestampMillisecondArray::from(vec![1, 2, 3]),
-            TimestampMillisecondArray::from(vec![1, 2, 3]),
-        )?;
+        check_rust_primitive_array_roundtrip(DurationNanosecondArray::from(vec![1, 2, 3]))?;
+        check_rust_primitive_array_roundtrip(DurationMicrosecondArray::from(vec![1, 2, 3]))?;
+        check_rust_primitive_array_roundtrip(DurationMillisecondArray::from(vec![1, 2, 3]))?;
+        check_rust_primitive_array_roundtrip(DurationSecondArray::from(vec![1, 2, 3]))?;
+        check_rust_primitive_array_roundtrip(array::Decimal128Array::from(vec![Some(1), Some(2), Some(3)]))?;
 
         // DuckDB can only return timestamp_tz in microseconds
         // Note: DuckDB by default returns timestamp_tz with UTC because the rust
         // driver doesnt support timestamp_tz properly when reading. In the
         // future we should be able to roundtrip timestamp_tz with other timezones too
-        check_rust_primitive_array_roundtrip(
+        check_rust_primitive_array_conversion(
             TimestampNanosecondArray::from(vec![1000, 2000, 3000]).with_timezone_utc(),
             TimestampMicrosecondArray::from(vec![1, 2, 3]).with_timezone_utc(),
         )?;
 
-        check_rust_primitive_array_roundtrip(
+        check_rust_primitive_array_conversion(
             TimestampMillisecondArray::from(vec![1, 2, 3]).with_timezone_utc(),
             TimestampMicrosecondArray::from(vec![1000, 2000, 3000]).with_timezone_utc(),
         )?;
 
-        check_rust_primitive_array_roundtrip(
+        check_rust_primitive_array_conversion(
             TimestampSecondArray::from(vec![1, 2, 3]).with_timezone_utc(),
             TimestampMicrosecondArray::from(vec![1_000_000, 2_000_000, 3_000_000]).with_timezone_utc(),
         )?;
 
-        check_rust_primitive_array_roundtrip(
+        check_rust_primitive_array_conversion(
             TimestampMicrosecondArray::from(vec![1, 2, 3]).with_timezone_utc(),
             TimestampMicrosecondArray::from(vec![1, 2, 3]).with_timezone_utc(),
         )?;
 
-        check_rust_primitive_array_roundtrip(Date32Array::from(vec![1, 2, 3]), Date32Array::from(vec![1, 2, 3]))?;
+        check_rust_primitive_array_roundtrip(Date32Array::from(vec![1, 2, 3]))?;
 
         let mid = arrow::temporal_conversions::MILLISECONDS_IN_DAY;
-        check_rust_primitive_array_roundtrip(
+        check_rust_primitive_array_conversion(
             Date64Array::from(vec![mid, 2 * mid, 3 * mid]),
             Date32Array::from(vec![1, 2, 3]),
         )?;
 
-        check_rust_primitive_array_roundtrip(
+        check_rust_primitive_array_conversion(
             Time32SecondArray::from(vec![1, 2, 3]),
             Time64MicrosecondArray::from(vec![1_000_000, 2_000_000, 3_000_000]),
         )?;

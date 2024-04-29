@@ -111,6 +111,15 @@ impl Inserter<&str> for FlatVector {
     }
 }
 
+impl Inserter<&[u8]> for FlatVector {
+    fn insert(&self, index: usize, value: &[u8]) {
+        let cstr = CString::new(value.to_vec()).unwrap();
+        unsafe {
+            duckdb_vector_assign_string_element(self.ptr, index as u64, cstr.as_ptr());
+        }
+    }
+}
+
 /// A list vector.
 pub struct ListVector {
     /// ListVector does not own the vector pointer.

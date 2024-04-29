@@ -18,7 +18,7 @@ categories = ["database"]
 name = "duckdb"
 
 [workspace]
-members = ["libduckdb-sys", "duckdb-loadable-macros"]
+members = ["libduckdb-sys", "duckdb-loadable-macros", "examples"]
 
 [features]
 default = []
@@ -62,6 +62,7 @@ num = { version = "0.4", optional = true, default-features = false, features = [
 duckdb-loadable-macros = { version = "0.1.1", path="./duckdb-loadable-macros", optional = true }
 polars = { version = "0.35.4", features = ["dtype-full"], optional = true}
 num-integer = {version = "0.1.46", optional = true}
+half = "2.4.1"
 
 [dev-dependencies]
 doc-comment = "0.3"
